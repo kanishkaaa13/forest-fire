@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+models/*.pkl
+dataset/images/
+*.egg-info/
+.DS_Store
+.env
+*.log

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Forest Fire Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin:0; font-family: Arial, sans-serif; background: #111; color: #fff; }
+    #map { height: 100vh; width: 100%; }
+    .header { position: absolute; top: 10px; left: 10px; z-index: 1000; background: rgba(0,0,0,0.7); padding: 10px 15px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>🔥 Live Forest Fire Detection Map</h2>
+    <p>Red markers = Detected fires from your model</p>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    // Initialize map (centered on India as default)
+    var map = L.map('map').setView([20.59, 78.96], 5);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    var fireMarkers = L.layerGroup().addTo(map);
+
+    function loadFireEvents() {
+      fetch('/get_fire_events')
+        .then(res => res.json())
+        .then(data => {
+          fireMarkers.clearLayers();
+          
+          data.events.forEach(event => {
+            var color = event.confidence > 80 ? 'red' : 'orange';
+            L.marker([event.lat, event.lng], {
+              icon: L.divIcon({
+                className: 'fire-marker',
+                html: `<div style="background:${color}; width:20px; height:20px; border-radius:50%; border:3px solid white;"></div>`,
+                iconSize: [20, 20]
+              })
+            })
+            .addTo(fireMarkers)
+            .bindPopup(`<b>🔥 FIRE DETECTED</b><br>Confidence: ${event.confidence}%<br>Time: ${event.time}`);
+          });
+        });
+    }
+
+    // Refresh every 5 seconds
+    setInterval(loadFireEvents, 5000);
+    loadFireEvents(); // initial load
+  </script>
+</body>
+</html>
