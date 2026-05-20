@@ -6,53 +6,278 @@
   <title>Live Forest Fire Map</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    body { margin:0; font-family: Arial, sans-serif; background: #111; color: #fff; }
-    #map { height: 100vh; width: 100%; }
-    .header { position: absolute; top: 10px; left: 10px; z-index: 1000; background: rgba(0,0,0,0.7); padding: 10px 15px; border-radius: 8px; }
+    :root {
+      --ember:#FF4500; --flame:#FF7B00; --safe:#2ECC71;
+      --ash:#0d0d0d; --panel:rgba(10,10,10,0.86);
+      --cinder:#333; --text:#F0EDE8; --muted:#777;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;font-family:'DM Sans',sans-serif;background:var(--ash);color:var(--text);overflow:hidden}
+    #app{display:flex;height:100vh}
+    #sidebar{width:300px;flex-shrink:0;z-index:1001;background:var(--panel);backdrop-filter:blur(22px);border-right:1px solid var(--cinder);display:flex;flex-direction:column}
+    #map-wrap{flex:1;position:relative}
+    #map{height:100%;width:100%}
+
+    /* Sidebar header */
+    .s-head{padding:20px 18px 14px;border-bottom:1px solid var(--cinder)}
+    .back-link{display:inline-block;font-family:'DM Mono',monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);text-decoration:none;border:1px solid var(--cinder);padding:5px 12px;border-radius:4px;margin-bottom:12px;transition:all .2s}
+    .back-link:hover{border-color:var(--flame);color:var(--flame)}
+    .s-title{font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:2px}
+    .s-title span{color:var(--flame)}
+    .live-badge{display:inline-flex;align-items:center;gap:6px;font-family:'DM Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--safe);text-transform:uppercase;margin-top:7px}
+    .live-dot{width:7px;height:7px;background:var(--safe);border-radius:50%;animation:pulse 1.5s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.5)}}
+
+    /* Stats */
+    .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--cinder);border-bottom:1px solid var(--cinder)}
+    .stat-box{background:rgba(15,15,15,0.95);padding:12px 14px}
+    .stat-val{font-family:'Bebas Neue',sans-serif;font-size:26px;letter-spacing:1px;color:var(--ember);line-height:1}
+    .stat-key{font-family:'DM Mono',monospace;font-size:9px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-top:2px}
+
+    /* Source tabs */
+    .source-tabs{display:flex;border-bottom:1px solid var(--cinder)}
+    .src-tab{flex:1;padding:9px;font-family:'DM Mono',monospace;font-size:10px;letter-spacing:1px;text-transform:uppercase;text-align:center;cursor:pointer;color:var(--muted);background:transparent;border:none;transition:all .2s;border-bottom:2px solid transparent}
+    .src-tab.active{color:var(--flame);border-bottom-color:var(--flame)}
+
+    /* Filter */
+    .filter-bar{padding:10px 14px;border-bottom:1px solid var(--cinder);display:flex;gap:6px;flex-wrap:wrap}
+    .f-btn{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:1px;text-transform:uppercase;padding:4px 10px;border-radius:3px;cursor:pointer;border:1px solid var(--cinder);background:transparent;color:var(--muted);transition:all .2s}
+    .f-btn.active{border-color:var(--flame);color:var(--flame);background:rgba(255,69,0,.1)}
+    .f-btn:hover:not(.active){border-color:#555;color:var(--text)}
+
+    /* NASA badge */
+    .nasa-badge{margin:10px 14px 0;padding:8px 12px;background:rgba(0,100,200,.12);border:1px solid rgba(0,100,200,.3);border-radius:6px;font-family:'DM Mono',monospace;font-size:10px;color:#60a0e0;letter-spacing:1px;display:flex;align-items:center;gap:8px}
+    .nasa-dot{width:6px;height:6px;background:#60a0e0;border-radius:50%;flex-shrink:0}
+
+    /* Event list */
+    .list-head{padding:10px 14px 6px;font-family:'DM Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase}
+    #event-list{flex:1;overflow-y:auto}
+    #event-list::-webkit-scrollbar{width:3px}
+    #event-list::-webkit-scrollbar-thumb{background:#2a2a2a}
+    .ev-item{padding:10px 14px;border-bottom:1px solid rgba(50,50,50,.5);cursor:pointer;transition:background .15s;display:flex;gap:10px;align-items:flex-start}
+    .ev-item:hover{background:rgba(255,255,255,.03)}
+    .ev-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:5px}
+    .ev-conf{font-family:'Bebas Neue',sans-serif;font-size:19px;letter-spacing:1px;color:var(--ember);line-height:1}
+    .ev-meta{font-family:'DM Mono',monospace;font-size:10px;color:var(--muted);margin-top:2px}
+    .ev-src{font-family:'DM Mono',monospace;font-size:9px;color:#444;margin-top:1px;text-transform:uppercase}
+    .no-ev{padding:24px 14px;text-align:center;font-family:'DM Mono',monospace;font-size:11px;color:#444}
+
+    /* Refresh */
+    .refresh-btn{margin:10px 14px;display:flex;align-items:center;justify-content:center;gap:8px;background:rgba(255,69,0,.10);border:1px solid rgba(255,69,0,.28);color:var(--flame);padding:9px;border-radius:6px;font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2px;text-transform:uppercase;cursor:pointer;transition:all .2s}
+    .refresh-btn:hover{background:rgba(255,69,0,.20)}
+
+    /* Legend */
+    .map-legend{position:absolute;bottom:24px;right:16px;z-index:1000;background:var(--panel);backdrop-filter:blur(16px);border:1px solid var(--cinder);border-radius:10px;padding:14px 16px}
+    .leg-title{font-family:'DM Mono',monospace;font-size:9px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:10px}
+    .leg-row{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+    .leg-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+    .leg-label{font-family:'DM Mono',monospace;font-size:11px;color:var(--text)}
+
+    /* NASA source badge on map */
+    .map-nasa-info{position:absolute;top:10px;right:16px;z-index:1000;background:var(--panel);backdrop-filter:blur(12px);border:1px solid rgba(0,100,200,.35);border-radius:8px;padding:8px 14px;font-family:'DM Mono',monospace;font-size:10px;color:#60a0e0;letter-spacing:1px}
+
+    /* Leaflet popup */
+    .leaflet-popup-content-wrapper{background:rgba(12,12,12,.92)!important;border:1px solid #3a3a3a!important;border-radius:8px!important;box-shadow:none!important}
+    .leaflet-popup-tip{background:#1a1a1a!important}
+    .leaflet-popup-content{font-family:'DM Mono',monospace;font-size:12px;line-height:1.7;color:var(--text)!important}
+    .pop-label{font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:1px;color:var(--ember)}
+    .pop-src{font-size:10px;color:#555;text-transform:uppercase;margin-top:4px}
   </style>
 </head>
 <body>
-  <div class="header">
-    <h2>🔥 Live Forest Fire Detection Map</h2>
-    <p>Red markers = Detected fires from your model</p>
+<div id="app">
+
+  <!-- SIDEBAR -->
+  <div id="sidebar">
+    <div class="s-head">
+      <a href="/" class="back-link">← Back</a>
+      <div class="s-title">Live <span>Fire</span> Map</div>
+      <div class="live-badge"><div class="live-dot"></div> Updating every 5 min</div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-box"><div class="stat-val" id="s-total">—</div><div class="stat-key">Total Fires</div></div>
+      <div class="stat-box"><div class="stat-val" id="s-nasa">—</div><div class="stat-key">NASA Satellite</div></div>
+      <div class="stat-box"><div class="stat-val" id="s-local">—</div><div class="stat-key">Local Detections</div></div>
+      <div class="stat-box"><div class="stat-val" id="s-high">—</div><div class="stat-key">High Confidence</div></div>
+    </div>
+
+    <div class="nasa-badge">
+      <div class="nasa-dot"></div>
+      NASA FIRMS · VIIRS satellite · 24h global
+    </div>
+
+    <!-- Source filter tabs -->
+    <div class="source-tabs">
+      <button class="src-tab active" onclick="setSource('all',this)">All</button>
+      <button class="src-tab" onclick="setSource('nasa',this)">Satellite</button>
+      <button class="src-tab" onclick="setSource('local',this)">Local</button>
+    </div>
+
+    <!-- Confidence filter -->
+    <div class="filter-bar">
+      <button class="f-btn active" onclick="setFilter('all',this)">All</button>
+      <button class="f-btn" onclick="setFilter('high',this)">&gt;80%</button>
+      <button class="f-btn" onclick="setFilter('critical',this)">&gt;90%</button>
+    </div>
+
+    <div class="list-head">Recent detections</div>
+    <div id="event-list"><div class="no-ev">Loading fire data…</div></div>
+
+    <button class="refresh-btn" onclick="loadFireEvents()">↺ Refresh now</button>
   </div>
-  <div id="map"></div>
 
-  <script>
-    // Initialize map (centered on India as default)
-    var map = L.map('map').setView([20.59, 78.96], 5);
+  <!-- MAP -->
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div class="map-nasa-info" id="nasa-info">🛰 Loading NASA FIRMS data…</div>
+    <div class="map-legend">
+      <div class="leg-title">Confidence</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#FF1500"></div><span class="leg-label">Critical (&gt;90%)</span></div>
+      <div class="leg-row"><div class="leg-dot" style="background:#FF4500"></div><span class="leg-label">High (70–90%)</span></div>
+      <div class="leg-row"><div class="leg-dot" style="background:#FF7B00"></div><span class="leg-label">Moderate (&lt;70%)</span></div>
+      <div class="leg-row"><div class="leg-dot" style="background:#4488FF;border:2px solid #fff"></div><span class="leg-label">Local detection</span></div>
+    </div>
+  </div>
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+</div>
 
-    var fireMarkers = L.layerGroup().addTo(map);
+<script>
+  var map = L.map('map',{zoomControl:false}).setView([20,0],2);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+    attribution:'&copy; OpenStreetMap &copy; CARTO', subdomains:'abcd', maxZoom:19
+  }).addTo(map);
+  L.control.zoom({position:'topright'}).addTo(map);
 
-    function loadFireEvents() {
-      fetch('/get_fire_events')
-        .then(res => res.json())
-        .then(data => {
-          fireMarkers.clearLayers();
-          
-          data.events.forEach(event => {
-            var color = event.confidence > 80 ? 'red' : 'orange';
-            L.marker([event.lat, event.lng], {
-              icon: L.divIcon({
-                className: 'fire-marker',
-                html: `<div style="background:${color}; width:20px; height:20px; border-radius:50%; border:3px solid white;"></div>`,
-                iconSize: [20, 20]
-              })
-            })
-            .addTo(fireMarkers)
-            .bindPopup(`<b>🔥 FIRE DETECTED</b><br>Confidence: ${event.confidence}%<br>Time: ${event.time}`);
-          });
-        });
+  var nasaLayer  = L.layerGroup().addTo(map);
+  var localLayer = L.layerGroup().addTo(map);
+
+  var allEvents    = [];
+  var activeSource = 'all';
+  var activeFilter = 'all';
+
+  function confColor(c, isLocal) {
+    if (isLocal) return '#4488FF';
+    if (c >= 90) return '#FF1500';
+    if (c >= 70) return '#FF4500';
+    return '#FF7B00';
+  }
+
+  function markerSize(c) {
+    if (c >= 90) return 10;
+    if (c >= 70) return 7;
+    return 5;
+  }
+
+  function isLocalEvent(ev) {
+    return ev.source && ev.source.toLowerCase().includes('local');
+  }
+
+  function filteredEvents() {
+    return allEvents.filter(ev => {
+      if (activeSource === 'nasa'  && isLocalEvent(ev))  return false;
+      if (activeSource === 'local' && !isLocalEvent(ev)) return false;
+      if (activeFilter === 'high'     && ev.confidence < 80) return false;
+      if (activeFilter === 'critical' && ev.confidence < 90) return false;
+      return true;
+    });
+  }
+
+  function renderMarkers() {
+    nasaLayer.clearLayers();
+    localLayer.clearLayers();
+    var evs = filteredEvents();
+
+    evs.forEach(ev => {
+      var local  = isLocalEvent(ev);
+      var color  = confColor(ev.confidence, local);
+      var size   = markerSize(ev.confidence);
+      var layer  = local ? localLayer : nasaLayer;
+
+      var icon = L.circleMarker([ev.lat, ev.lng], {
+        radius:      size,
+        fillColor:   color,
+        color:       local ? '#fff' : 'rgba(0,0,0,0.3)',
+        weight:      local ? 1.5 : 0.5,
+        fillOpacity: local ? 0.95 : 0.75,
+      });
+
+      var brt  = ev.brightness ? `<br>Brightness: ${ev.brightness}K` : '';
+      var src  = ev.source || 'Unknown';
+      icon.bindPopup(`
+        <div class="pop-label">🔥 Active Fire</div>
+        Confidence: <b>${ev.confidence}%</b>${brt}<br>
+        Time: ${ev.time}<br>
+        <div class="pop-src">${src}</div>
+      `);
+      icon.addTo(layer);
+    });
+  }
+
+  function renderList() {
+    var el  = document.getElementById('event-list');
+    var evs = [...filteredEvents()].reverse().slice(0,100);
+    if (!evs.length) { el.innerHTML = '<div class="no-ev">No events match this filter</div>'; return; }
+    el.innerHTML = evs.map(ev => {
+      var local = isLocalEvent(ev);
+      var color = confColor(ev.confidence, local);
+      return `<div class="ev-item" onclick="map.flyTo([${ev.lat},${ev.lng}],8,{duration:1.2})">
+        <div class="ev-dot" style="background:${color}"></div>
+        <div>
+          <div class="ev-conf">${ev.confidence}%</div>
+          <div class="ev-meta">${ev.time}</div>
+          <div class="ev-src">${(ev.source||'').replace('NASA FIRMS (VIIRS satellite)','VIIRS Satellite')}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function updateStats(data) {
+    document.getElementById('s-total').textContent = data.total || 0;
+    document.getElementById('s-nasa').textContent  = data.nasa_count || 0;
+    document.getElementById('s-local').textContent = data.local_count || 0;
+    var high = (data.events||[]).filter(e => e.confidence >= 80).length;
+    document.getElementById('s-high').textContent  = high;
+
+    var info = document.getElementById('nasa-info');
+    if (data.nasa_count > 0) {
+      info.textContent = `🛰 NASA FIRMS: ${data.nasa_count} active fires · Last 24h · VIIRS satellite`;
+    } else {
+      info.textContent = '🛰 NASA FIRMS: Loading…';
     }
+  }
 
-    // Refresh every 5 seconds
-    setInterval(loadFireEvents, 5000);
-    loadFireEvents(); // initial load
-  </script>
+  function loadFireEvents() {
+    fetch('/get_fire_events')
+      .then(r => r.json())
+      .then(data => {
+        allEvents = data.events || [];
+        updateStats(data);
+        renderMarkers();
+        renderList();
+      })
+      .catch(e => console.error('Fetch error:', e));
+  }
+
+  function setSource(src, btn) {
+    activeSource = src;
+    document.querySelectorAll('.src-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderMarkers(); renderList();
+  }
+
+  function setFilter(f, btn) {
+    activeFilter = f;
+    document.querySelectorAll('.f-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderMarkers(); renderList();
+  }
+
+  // Initial load + refresh every 5 minutes
+  loadFireEvents();
+  setInterval(loadFireEvents, 300000);
+</script>
 </body>
 </html>
