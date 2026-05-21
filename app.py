@@ -4,64 +4,94 @@ Ensemble: CNN (primary, weight=4) + GradientBoosting (weight=2) + Heuristic (fal
 Map data: NASA FIRMS satellite active fire data (real world, last 24h)
 """
 
-import os, io, base64, numpy as np, pickle, torch, json, urllib.request
+import os, io, base64, numpy as np, pickle, json, urllib.request
 from datetime import datetime
-
 
 from flask import Flask, request, jsonify, render_template
 from PIL import Image
-import timm
-import torchvision.transforms as transforms
 
 app = Flask(__name__)
-DEVICE = torch.device("cpu")
 
-# ── Load CNN ───────────────────────────────────────────────────────
-cnn_model     = None
-cnn_transform = None
+# ── Lazy-loaded model references (nothing loads at startup) ────────
+_cnn_model     = None
+_cnn_transform = None
+_cnn_loaded    = False   # tracks whether load was attempted
 
-try:
-    with open("models/cnn_meta.pkl", "rb") as f:
-        meta = pickle.load(f)
-    model_name = meta.get("model_name", "mobilenetv3_small_075")
-    img_size   = meta.get("img_size", 224)
-    cnn_model  = timm.create_model(model_name, pretrained=False, num_classes=2)
-    cnn_model.load_state_dict(torch.load("models/cnn_fire_model.pth", map_location=DEVICE))
-    cnn_model.eval()
-    cnn_model.to(DEVICE)
-    cnn_transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-    ])
-    print(f"✅ CNN loaded  →  {model_name}  (img_size={img_size})")
-except FileNotFoundError:
-    print("⚠ CNN model not found. Run: python train_cnn.py")
-except Exception as e:
-    print(f"⚠ CNN model failed to load: {e}")
+_gb_bundle     = None
+_gb_loaded     = False
 
-# ── Load GradientBoosting ──────────────────────────────────────────
-gb_bundle = None
-try:
-    with open("models/image_model.pkl", "rb") as f:
-        gb_bundle = pickle.load(f)
-    print("✅ GradientBoosting model loaded")
-except FileNotFoundError:
-    print("⚠ GB model not found. Run: python train_models.py")
-except Exception as e:
-    print(f"⚠ GB model failed to load: {e}")
+_tab_scaler     = None
+_tab_classifier = None
+_tab_regressor  = None
+_tab_loaded     = False
 
-# ── Load Tabular Models ────────────────────────────────────────────
-tab_scaler = tab_classifier = tab_regressor = None
-try:
-    with open("models/scaler.pkl",     "rb") as f: tab_scaler     = pickle.load(f)
-    with open("models/classifier.pkl", "rb") as f: tab_classifier = pickle.load(f)
-    with open("models/regressor.pkl",  "rb") as f: tab_regressor  = pickle.load(f)
-    print("✅ Tabular models loaded")
-except FileNotFoundError:
-    print("⚠ Tabular models not found. Run: python train_models.py")
-except Exception as e:
-    print(f"⚠ Tabular models failed to load: {e}")
+
+def load_cnn():
+    """Load CNN model on first use, not at startup."""
+    global _cnn_model, _cnn_transform, _cnn_loaded
+    if _cnn_loaded:
+        return
+    _cnn_loaded = True
+    try:
+        import torch, timm
+        import torchvision.transforms as transforms
+
+        with open("models/cnn_meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        model_name = meta.get("model_name", "mobilenetv3_small_075")
+        img_size   = meta.get("img_size", 224)
+
+        model = timm.create_model(model_name, pretrained=False, num_classes=2)
+        model.load_state_dict(
+            torch.load("models/cnn_fire_model.pth", map_location=torch.device("cpu"))
+        )
+        model.eval()
+
+        _cnn_model = model
+        _cnn_transform = transforms.Compose([
+            transforms.Resize((img_size, img_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225]),
+        ])
+        print(f"✅ CNN loaded  →  {model_name}  (img_size={img_size})")
+    except FileNotFoundError:
+        print("⚠ CNN model not found. Run: python train_cnn.py")
+    except Exception as e:
+        print(f"⚠ CNN model failed to load: {e}")
+
+
+def load_gb():
+    """Load GradientBoosting model on first use."""
+    global _gb_bundle, _gb_loaded
+    if _gb_loaded:
+        return
+    _gb_loaded = True
+    try:
+        with open("models/image_model.pkl", "rb") as f:
+            _gb_bundle = pickle.load(f)
+        print("✅ GradientBoosting model loaded")
+    except FileNotFoundError:
+        print("⚠ GB model not found. Run: python train_models.py")
+    except Exception as e:
+        print(f"⚠ GB model failed to load: {e}")
+
+
+def load_tabular():
+    """Load tabular models on first use."""
+    global _tab_scaler, _tab_classifier, _tab_regressor, _tab_loaded
+    if _tab_loaded:
+        return
+    _tab_loaded = True
+    try:
+        with open("models/scaler.pkl",     "rb") as f: _tab_scaler     = pickle.load(f)
+        with open("models/classifier.pkl", "rb") as f: _tab_classifier = pickle.load(f)
+        with open("models/regressor.pkl",  "rb") as f: _tab_regressor  = pickle.load(f)
+        print("✅ Tabular models loaded")
+    except FileNotFoundError:
+        print("⚠ Tabular models not found. Run: python train_models.py")
+    except Exception as e:
+        print(f"⚠ Tabular models failed to load: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -86,14 +116,14 @@ def smart_fire_heuristic(img_array):
            np.where(maxc==g,(b-r)/diff+2,(r-g)/diff+4))/6.0
 
     # Strict fire: BRIGHT warm pixels only (not muted autumn red)
-    fire_px = (r>0.68) & (g<r*0.72) & (b<r*0.42) & (r-b>0.38) & (v>0.65)
+    fire_px    = (r>0.68) & (g<r*0.72) & (b<r*0.42) & (r-b>0.38) & (v>0.65)
     fire_ratio = float(fire_px.mean())
 
     # Reject solid object (car/wall)
     if fire_ratio > 0.0:
         fy, fx = np.where(fire_px)
         if len(fy) > 10:
-            bbox     = (fy.max()-fy.min()+1)*(fx.max()-fx.min()+1)
+            bbox      = (fy.max()-fy.min()+1)*(fx.max()-fx.min()+1)
             fill_rate = len(fy)/(bbox+1e-6)
             if fill_rate > 0.70 and avg_texture < 0.12:
                 return False, 0.0, "Solid object (car/wall) — not fire"
@@ -101,12 +131,12 @@ def smart_fire_heuristic(img_array):
             fire_ratio = 0.0
 
     # Reject broad red/orange foliage scenes (autumn, red trees)
-    red_dom   = float((r > 0.40).mean())
+    red_dom    = float((r > 0.40).mean())
     bright_var = float(v.std())
     if red_dom > 0.42 and bright_var < 0.20 and fire_ratio < 0.12:
         return False, 0.0, "Red foliage / natural scene — not fire"
 
-    smoke_px = (s<0.22) & (v>0.38) & (v<0.88) & (np.abs(r-g)<0.09) & (np.abs(g-b)<0.09)
+    smoke_px    = (s<0.22) & (v>0.38) & (v<0.88) & (np.abs(r-g)<0.09) & (np.abs(g-b)<0.09)
     smoke_ratio = float(smoke_px.mean())
 
     green_px = float(((g>r*1.05)&(g>b)&(g>0.20)).mean())
@@ -183,7 +213,6 @@ def fwi_danger(fwi):
 #  NASA FIRMS  — real-world active satellite fire data
 #  No API key needed. Public CSV. Refreshed every hour.
 # ══════════════════════════════════════════════════════════════════
-# Put your key here after registering
 FIRMS_MAP_KEY = "7a866dce41eddfabb75cb6d797b170fd"
 FIRMS_TTL     = 1800   # 30 min cache
 
@@ -197,7 +226,6 @@ def fetch_nasa_firms():
 
     fires = []
     try:
-        # World, last 1 day, VIIRS NOAA-20 (highest quality)
         url = (f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
                f"{FIRMS_MAP_KEY}/VIIRS_NOAA20_NRT/world/1")
 
@@ -205,7 +233,7 @@ def fetch_nasa_firms():
         with urllib.request.urlopen(req, timeout=20) as r:
             raw = r.read().decode("utf-8")
 
-        lines  = raw.strip().split("\n")
+        lines = raw.strip().split("\n")
         if len(lines) < 2:
             raise ValueError("Empty response")
 
@@ -218,7 +246,6 @@ def fetch_nasa_firms():
         conf_i = col("confidence"); acq_i  = col("acq_date")
         tim_i  = col("acq_time");   brt_i  = col("bright_ti4") or col("brightness")
 
-        # Sample max 1500 to avoid overloading Leaflet
         data_lines = lines[1:]
         if len(data_lines) > 1500:
             data_lines = random.sample(data_lines, 1500)
@@ -233,7 +260,6 @@ def fetch_nasa_firms():
                 time = c[tim_i].strip()  if tim_i  else ""
                 brt  = float(c[brt_i])   if brt_i and c[brt_i].strip() else 0
 
-                # confidence is 'l' / 'n' / 'h'  OR  0–100
                 if   conf in ("h","high"):    conf_pct = 90
                 elif conf in ("l","low"):     conf_pct = 50
                 else:
@@ -278,19 +304,20 @@ def map_page():
 
 @app.route("/predict_tabular", methods=["POST"])
 def predict_tabular():
+    load_tabular()  # lazy load on first request
     try:
-        if tab_classifier is None:
+        if _tab_classifier is None:
             return jsonify({"success":False,"error":"Tabular models not loaded. Run: python train_models.py"})
         FEATURES = ["Temperature","RH","Ws","Rain","FFMC","DMC","DC","ISI","BUI","FWI"]
         data     = request.get_json()
         row      = np.array([[float(data[f]) for f in FEATURES]])
-        row_sc   = tab_scaler.transform(row)
-        pred     = int(tab_classifier.predict(row_sc)[0])
-        proba    = tab_classifier.predict_proba(row_sc)[0]
+        row_sc   = _tab_scaler.transform(row)
+        pred     = int(_tab_classifier.predict(row_sc)[0])
+        proba    = _tab_classifier.predict_proba(row_sc)[0]
         conf     = round(float(proba[pred])*100, 1)
         final_pred, final_conf, override = tabular_heuristic_override(data, pred, conf)
         label    = "🔥 FIRE RISK DETECTED" if final_pred==1 else "✅ NO FIRE RISK"
-        fwi_pred = float(tab_regressor.predict(row_sc)[0]) if tab_regressor else float(data["FWI"])
+        fwi_pred = float(_tab_regressor.predict(row_sc)[0]) if _tab_regressor else float(data["FWI"])
         return jsonify({"success":True,
             "classification":{"class":final_pred,"label":label,"confidence":round(final_conf,1),"override_reason":override},
             "regression":{"FWI":round(fwi_pred,2),"danger_level":fwi_danger(fwi_pred)}})
@@ -301,7 +328,11 @@ def predict_tabular():
 
 @app.route("/predict_image", methods=["POST"])
 def predict_image():
+    load_cnn()  # lazy load on first request
+    load_gb()   # lazy load on first request
     try:
+        import torch
+
         if "image" not in request.files:
             return jsonify({"success":False,"error":"No image uploaded"})
 
@@ -314,10 +345,10 @@ def predict_image():
         cnn_fire_prob = None
 
         # ── CNN  (weight=4, PRIMARY) ───────────────────────────────
-        if cnn_model is not None and cnn_transform is not None:
-            inp  = cnn_transform(img_pil).unsqueeze(0).to(DEVICE)
+        if _cnn_model is not None and _cnn_transform is not None:
+            inp  = _cnn_transform(img_pil).unsqueeze(0)
             with torch.no_grad():
-                out  = cnn_model(inp)
+                out  = _cnn_model(inp)
                 prob = torch.softmax(out, dim=1)[0]
                 cnn_fire_prob = float(prob[1])
                 cnn_fire = cnn_fire_prob > 0.55
@@ -325,11 +356,11 @@ def predict_image():
             print(f"[CNN] fire_prob={cnn_fire_prob:.3f} → {'FIRE' if cnn_fire else 'NO FIRE'}")
 
         # ── GradientBoosting  (weight=2) ──────────────────────────
-        if gb_bundle is not None:
+        if _gb_bundle is not None:
             arr   = np.array(img_pil.resize((128,128)), dtype=np.uint8)
             feats = extract_features(arr).reshape(1,-1)
-            fsc   = gb_bundle["scaler"].transform(feats)
-            gp    = gb_bundle["model"].predict_proba(fsc)[0]
+            fsc   = _gb_bundle["scaler"].transform(feats)
+            gp    = _gb_bundle["model"].predict_proba(fsc)[0]
             gbp   = float(gp[1]); gbf = gbp > 0.45
             votes.append((gbf, gbp, "GB", 2))
             print(f"[GB]  fire_prob={gbp:.3f} → {'FIRE' if gbf else 'NO FIRE'}")
@@ -371,7 +402,7 @@ def predict_image():
             if len(local_detections) > 50: local_detections.pop(0)
 
         buf = io.BytesIO()
-        img_pil.resize((300,200)).save(buf,format="JPEG",quality=85)
+        img_pil.resize((300,200)).save(buf, format="JPEG", quality=85)
         img_b64 = base64.b64encode(buf.getvalue()).decode()
 
         return jsonify({
@@ -387,7 +418,7 @@ def predict_image():
 
 @app.route("/get_fire_events")
 def get_fire_events():
-    nasa   = fetch_nasa_firms()
+    nasa     = fetch_nasa_firms()
     combined = nasa + local_detections
     return jsonify({"events":combined,"nasa_count":len(nasa),
                     "local_count":len(local_detections),"total":len(combined)})
@@ -396,12 +427,7 @@ def get_fire_events():
 def get_local_detections():
     return jsonify({"events": local_detections})
 
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False
-    )
-
+    app.run(host="0.0.0.0", port=port)
