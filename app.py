@@ -12,10 +12,10 @@ from PIL import Image
 
 app = Flask(__name__)
 
-# ── Lazy-loaded model references (nothing loads at startup) ────────
+# ── Model references ──────────────────────────────────────────────
 _cnn_model     = None
 _cnn_transform = None
-_cnn_loaded    = False   # tracks whether load was attempted
+_cnn_loaded    = False
 
 _gb_bundle     = None
 _gb_loaded     = False
@@ -27,41 +27,48 @@ _tab_loaded     = False
 
 
 def load_cnn():
-    """Load CNN model on first use, not at startup."""
+    """Load CNN using torchvision MobileNetV3-Small (no timm dependency)."""
     global _cnn_model, _cnn_transform, _cnn_loaded
     if _cnn_loaded:
         return
     _cnn_loaded = True
     try:
         import torch
-        import timm
-        import torchvision.transforms as transforms
+        from torchvision import transforms
+        from torchvision.models import mobilenet_v3_small
 
-        with open("models/cnn_meta.pkl", "rb") as f:
-            meta = pickle.load(f)
-        model_name = meta.get("model_name", "mobilenetv3_small_075")
-        img_size   = meta.get("img_size", 224)
+        device = torch.device("cpu")
 
-        model = timm.create_model(model_name, pretrained=False, num_classes=2)
-        model.load_state_dict(
-            torch.load("models/cnn_fire_model.pth", map_location=torch.device("cpu"))
+        # Build model with 2-class head
+        model = mobilenet_v3_small(weights=None)
+        model.classifier[3] = torch.nn.Linear(
+            model.classifier[3].in_features, 2
         )
-        model.eval()
 
+        # Load saved weights — strict=False tolerates minor key mismatches
+        # (the model was originally trained with timm's mobilenetv3_small_075)
+        state = torch.load("models/cnn_fire_model.pth", map_location=device)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if missing:
+            print(f"⚠ CNN: {len(missing)} missing keys (architecture mismatch with timm weights)")
+            print("  → CNN disabled; falling back to GB + heuristic")
+            return                      # don't use a partially-loaded model
+
+        model.eval()
         _cnn_model = model
         _cnn_transform = transforms.Compose([
-            transforms.Resize((img_size, img_size)),
+            transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                  std=[0.229, 0.224, 0.225]),
         ])
-        print(f"✅ CNN loaded  →  {model_name}  (img_size={img_size})")
+        print("✅ CNN loaded  →  mobilenet_v3_small (torchvision)")
     except ImportError:
-        print("⚠ torch/timm not installed — CNN disabled (using GB + heuristic only)")
+        print("⚠ torch/torchvision not installed — CNN disabled")
     except FileNotFoundError:
-        print("⚠ CNN model not found. Run: python train_cnn.py")
+        print("⚠ CNN model file not found — CNN disabled")
     except Exception as e:
-        print(f"⚠ CNN model failed to load: {e}")
+        print(f"⚠ CNN failed to load: {e} — falling back to GB + heuristic")
 
 
 def load_gb():
@@ -227,18 +234,17 @@ def fetch_nasa_firms():
     if _firms_cache["fetched_at"] and (now - _firms_cache["fetched_at"]) < FIRMS_TTL:
         return _firms_cache["data"]
 
-    fires = []
     try:
         url = (f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
                f"{FIRMS_MAP_KEY}/VIIRS_NOAA20_NRT/world/1")
 
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=15) as r:
             raw = r.read().decode("utf-8")
 
         lines = raw.strip().split("\n")
         if len(lines) < 2:
-            raise ValueError("Empty response")
+            raise ValueError("Empty response from NASA FIRMS")
 
         header = [h.strip() for h in lines[0].split(",")]
 
@@ -253,6 +259,7 @@ def fetch_nasa_firms():
         if len(data_lines) > 1500:
             data_lines = random.sample(data_lines, 1500)
 
+        fires = []
         for line in data_lines:
             c = line.split(",")
             try:
@@ -280,16 +287,15 @@ def fetch_nasa_firms():
             except Exception:
                 continue
 
-        print(f"✅ NASA FIRMS API: {len(fires)} fires loaded")
+        print(f"✅ NASA FIRMS: {len(fires)} fires loaded")
         _firms_cache["data"]       = fires
         _firms_cache["fetched_at"] = now
+        return fires
 
     except Exception as e:
-        print(f"⚠ NASA FIRMS API failed: {e}")
-        if _firms_cache["data"]:
-            return _firms_cache["data"]
-
-    return fires
+        print(f"⚠ NASA FIRMS failed: {e}")
+        # Return stale cache if available, else empty list
+        return _firms_cache["data"] if _firms_cache["data"] else []
 
 
 # ── In-memory local detection log ─────────────────────────────────
@@ -331,8 +337,9 @@ def predict_tabular():
 
 @app.route("/predict_image", methods=["POST"])
 def predict_image():
-    load_cnn()  # lazy load on first request
-    load_gb()   # lazy load on first request
+    # Models already loaded at startup; these are no-ops after first call
+    load_cnn()
+    load_gb()
     try:
         if "image" not in request.files:
             return jsonify({"success":False,"error":"No image uploaded"})
@@ -423,10 +430,16 @@ def predict_image():
 
 @app.route("/get_fire_events")
 def get_fire_events():
-    nasa     = fetch_nasa_firms()
-    combined = nasa + local_detections
-    return jsonify({"events":combined,"nasa_count":len(nasa),
-                    "local_count":len(local_detections),"total":len(combined)})
+    nasa        = fetch_nasa_firms()
+    combined    = nasa + local_detections
+    nasa_ok     = len(nasa) > 0 or _firms_cache["fetched_at"] is not None
+    return jsonify({
+        "events":      combined,
+        "nasa_count":  len(nasa),
+        "local_count": len(local_detections),
+        "total":       len(combined),
+        "nasa_ok":     nasa_ok,
+    })
 
 @app.route("/get_local_detections")
 def get_local_detections():

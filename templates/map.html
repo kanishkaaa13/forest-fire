@@ -243,13 +243,26 @@
 
     var info = document.getElementById('nasa-info');
     if (data.nasa_count > 0) {
+      info.style.borderColor = 'rgba(0,100,200,.3)';
+      info.style.color = '#60a0e0';
       info.textContent = `🛰 NASA FIRMS: ${data.nasa_count} active fires · Last 24h · VIIRS satellite`;
+    } else if (data.nasa_ok) {
+      info.style.borderColor = 'rgba(0,100,200,.3)';
+      info.style.color = '#60a0e0';
+      info.textContent = `🛰 NASA FIRMS: 0 fires detected · Last 24h · VIIRS satellite`;
     } else {
-      info.textContent = '🛰 NASA FIRMS: Loading…';
+      info.style.borderColor = 'rgba(255,69,0,.3)';
+      info.style.color = '#FF7B00';
+      info.textContent = '⚠ NASA FIRMS: API unavailable — showing cached data';
     }
   }
 
   function loadFireEvents() {
+    var info = document.getElementById('nasa-info');
+    info.style.borderColor = 'rgba(0,100,200,.3)';
+    info.style.color = '#60a0e0';
+    info.textContent = '🛰 NASA FIRMS: Fetching satellite data…';
+
     fetch('/get_fire_events')
       .then(r => r.json())
       .then(data => {
@@ -258,7 +271,12 @@
         renderMarkers();
         renderList();
       })
-      .catch(e => console.error('Fetch error:', e));
+      .catch(e => {
+        console.error('Fetch error:', e);
+        info.style.borderColor = 'rgba(255,69,0,.3)';
+        info.style.color = '#FF7B00';
+        info.textContent = '⚠ NASA FIRMS: Connection error';
+      });
   }
 
   function setSource(src, btn) {
