@@ -23,20 +23,20 @@ to improve detection reliability and reduce false negatives.
 
 # 🌐 Live Demo
 
-👉 https://forest-fire-1-xcci.onrender.com/
+👉 https://forest-fire-2-878c.onrender.com
 
 ---
 
 # 📸 Screenshots
 
 ## Home Page
-(Add screenshot here)
+![alt text](image.png)
 
 ## Fire Detection Result
-(Add screenshot here)
+![alt text](image-1.png)
 
 ## Fire Map
-(Add screenshot here)
+![alt text](image-2.png)
 
 ---
 
