@@ -33,7 +33,8 @@ def load_cnn():
         return
     _cnn_loaded = True
     try:
-        import torch, timm
+        import torch
+        import timm
         import torchvision.transforms as transforms
 
         with open("models/cnn_meta.pkl", "rb") as f:
@@ -55,6 +56,8 @@ def load_cnn():
                                  std=[0.229, 0.224, 0.225]),
         ])
         print(f"✅ CNN loaded  →  {model_name}  (img_size={img_size})")
+    except ImportError:
+        print("⚠ torch/timm not installed — CNN disabled (using GB + heuristic only)")
     except FileNotFoundError:
         print("⚠ CNN model not found. Run: python train_cnn.py")
     except Exception as e:
@@ -331,8 +334,6 @@ def predict_image():
     load_cnn()  # lazy load on first request
     load_gb()   # lazy load on first request
     try:
-        import torch
-
         if "image" not in request.files:
             return jsonify({"success":False,"error":"No image uploaded"})
 
@@ -346,14 +347,18 @@ def predict_image():
 
         # ── CNN  (weight=4, PRIMARY) ───────────────────────────────
         if _cnn_model is not None and _cnn_transform is not None:
-            inp  = _cnn_transform(img_pil).unsqueeze(0)
-            with torch.no_grad():
-                out  = _cnn_model(inp)
-                prob = torch.softmax(out, dim=1)[0]
-                cnn_fire_prob = float(prob[1])
-                cnn_fire = cnn_fire_prob > 0.55
-            votes.append((cnn_fire, cnn_fire_prob, "CNN", 4))
-            print(f"[CNN] fire_prob={cnn_fire_prob:.3f} → {'FIRE' if cnn_fire else 'NO FIRE'}")
+            try:
+                import torch
+                inp  = _cnn_transform(img_pil).unsqueeze(0)
+                with torch.no_grad():
+                    out  = _cnn_model(inp)
+                    prob = torch.softmax(out, dim=1)[0]
+                    cnn_fire_prob = float(prob[1])
+                    cnn_fire = cnn_fire_prob > 0.55
+                votes.append((cnn_fire, cnn_fire_prob, "CNN", 4))
+                print(f"[CNN] fire_prob={cnn_fire_prob:.3f} → {'FIRE' if cnn_fire else 'NO FIRE'}")
+            except Exception as cnn_err:
+                print(f"[CNN] skipped: {cnn_err}")
 
         # ── GradientBoosting  (weight=2) ──────────────────────────
         if _gb_bundle is not None:
