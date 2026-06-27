@@ -11,7 +11,7 @@
 
 **An AI-powered wildfire monitoring system that combines deep learning, machine learning, and real-time NASA satellite fire data to detect and predict forest fire risks.**
 
-[🌐 Live Demo](https://forest-fire-1-vybj.onrender.com) · [📂 Source Code](https://github.com/kanishkaaa13/forest-fire) · [🗺️ Live Fire Map](https://forest-fire-1-vybj.onrender.com/map)
+[🌐 Live Demo](https://forest-fire-3-yuoe.onrender.com) · [📂 Source Code](https://github.com/kanishkaaa13/forest-fire) · [🗺️ Live Fire Map](https://forest-fire-3-yuoe.onrender.com/map)
 
 > ⚠️ **First load may take 30–60 seconds** to wake up (Render free tier sleeps when idle). Please be patient!
 

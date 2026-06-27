@@ -105,8 +105,8 @@ def load_tabular():
 
 
 # ══════════════════════════════════════════════════════════════════
-#  HEURISTIC  (fallback — only used when CNN is uncertain or absent)
-#  Much stricter than before. Rejects red foliage, autumn scenes.
+#  HEURISTIC  — always runs; acts as a hard veto against false positives.
+#  Stricter fire pixel definition + skin / document / vegetation guards.
 # ══════════════════════════════════════════════════════════════════
 
 def smart_fire_heuristic(img_array):
@@ -125,8 +125,9 @@ def smart_fire_heuristic(img_array):
     hue  = np.where(maxc==r,(g-b)/diff%6,
            np.where(maxc==g,(b-r)/diff+2,(r-g)/diff+4))/6.0
 
-    # Strict fire: BRIGHT warm pixels only (not muted autumn red)
-    fire_px    = (r>0.68) & (g<r*0.72) & (b<r*0.42) & (r-b>0.38) & (v>0.65)
+    # FIX 3d — Strict fire pixel mask: only genuinely bright, saturated flame colors
+    # (much tighter than the old (r>0.48)&(g<r*0.92)&(b<r*0.62))
+    fire_px    = (r>0.72) & (g<r*0.68) & (b<r*0.38) & (r-b>0.42) & (v>0.60)
     fire_ratio = float(fire_px.mean())
 
     # Reject solid object (car/wall)
@@ -140,6 +141,25 @@ def smart_fire_heuristic(img_array):
         else:
             fire_ratio = 0.0
 
+    # FIX 3a — Skin tone rejection:
+    # H: 0–25° (0–0.069 normalised), S: 20–60%, V: 40–90%
+    skin_px    = (hue < 0.069) & (s > 0.20) & (s < 0.60) & (v > 0.40) & (v < 0.90)
+    skin_ratio = float(skin_px.mean())
+    if skin_ratio > 0.12 and fire_ratio < 0.10:
+        return False, 0.0, "Skin tone scene — not fire"
+
+    # FIX 3b — Document / text rejection:
+    # lots of near-white AND near-black pixels (printed page)
+    near_white = float((v > 0.88).mean())
+    near_black = float((v < 0.12).mean())
+    if near_white > 0.35 and near_black > 0.15:
+        return False, 0.0, "Document/text image — not fire"
+
+    # FIX 3c — Green vegetation dominance:
+    green_px = float(((g>r*1.05)&(g>b)&(g>0.20)).mean())
+    if green_px > 0.35 and fire_ratio < 0.08:
+        return False, 0.0, "Green vegetation dominant — not fire"
+
     # Reject broad red/orange foliage scenes (autumn, red trees)
     red_dom    = float((r > 0.40).mean())
     bright_var = float(v.std())
@@ -149,7 +169,6 @@ def smart_fire_heuristic(img_array):
     smoke_px    = (s<0.22) & (v>0.38) & (v<0.88) & (np.abs(r-g)<0.09) & (np.abs(g-b)<0.09)
     smoke_ratio = float(smoke_px.mean())
 
-    green_px = float(((g>r*1.05)&(g>b)&(g>0.20)).mean())
     sky_px   = float(((b>0.52)&(b>r)&(b>g)).mean())
     h2, w2   = r.shape[0]//2, r.shape[1]//2
     quads    = [r[:h2,:w2].mean(),r[:h2,w2:].mean(),r[h2:,:w2].mean(),r[h2:,w2:].mean()]
@@ -165,7 +184,7 @@ def smart_fire_heuristic(img_array):
     ))
     is_fire = (fire_score > 0.50 and confidence > 0.35) or (smoke_score > 0.65 and fire_score > 0.15)
     reason  = (f"fire_px={fire_ratio*100:.1f}% smoke={smoke_ratio*100:.1f}% "
-               f"tex={avg_texture:.3f} red_dom={red_dom*100:.0f}%")
+               f"tex={avg_texture:.3f} red_dom={red_dom*100:.0f}% skin={skin_ratio*100:.0f}%")
     return is_fire, confidence, reason
 
 
@@ -373,33 +392,65 @@ def predict_image():
             feats = extract_features(arr).reshape(1,-1)
             fsc   = _gb_bundle["scaler"].transform(feats)
             gp    = _gb_bundle["model"].predict_proba(fsc)[0]
-            gbp   = float(gp[1]); gbf = gbp > 0.45
+            # FIX 2a — Raised GB threshold 0.45 → 0.62 to reduce false positives
+            gbp   = float(gp[1]); gbf = gbp > 0.62
             votes.append((gbf, gbp, "GB", 2))
             print(f"[GB]  fire_prob={gbp:.3f} → {'FIRE' if gbf else 'NO FIRE'}")
 
-        # ── Heuristic (weight=1, ONLY when CNN uncertain or absent) ──
-        cnn_confident = cnn_fire_prob is not None and (cnn_fire_prob > 0.65 or cnn_fire_prob < 0.35)
-        if not cnn_confident:
-            arr256 = np.array(img_pil.resize((256,256)), dtype=np.uint8)
-            hf, hc, hr = smart_fire_heuristic(arr256)
-            votes.append((hf, hc, "Heuristic", 1))
-            print(f"[Heuristic] fire={hf} conf={hc:.3f} | {hr}")
-        else:
-            print(f"[Heuristic] Skipped — CNN confident ({cnn_fire_prob:.3f})")
+        # ── Heuristic (weight=1) — FIX 2b: ALWAYS runs as a hard veto ──
+        arr256 = np.array(img_pil.resize((256,256)), dtype=np.uint8)
+        hf, hc, hr = smart_fire_heuristic(arr256)
+        votes.append((hf, hc, "Heuristic", 1))
+        print(f"[Heuristic] fire={hf} conf={hc:.3f} | {hr}")
+
+        # FIX 2e — Fallback warning when running on heuristic only
+        warning_msg = None
+        cnn_present = _cnn_model is not None
+        gb_present  = _gb_bundle is not None
+        if not cnn_present and not gb_present:
+            warning_msg = ("Running on heuristic only — accuracy may be low. "
+                           "Please check model files.")
+            print(f"⚠ {warning_msg}")
 
         # ── Ensemble ───────────────────────────────────────────────
         total_w = sum(w for _,_,_,w in votes)
         fire_w  = sum(w for f,_,_,w in votes if f)
         final   = fire_w > (total_w - fire_w)
 
-        # Hard CNN override
+        # FIX 2b — Heuristic hard veto:
+        # If heuristic says NO FIRE and has very low confidence, force no fire
+        if not hf and hc < 0.12:
+            if final:
+                print(f"[Heuristic VETO] Overriding FIRE → NO FIRE (heuristic conf={hc:.3f})")
+            final = False
+
+        # Hard CNN override (existing + FIX 2d soft vote)
         if cnn_fire_prob is not None:
-            if cnn_fire_prob > 0.88:   final = True;  print(f"[Override] CNN FIRE ({cnn_fire_prob:.3f})")
-            elif cnn_fire_prob < 0.15: final = False; print(f"[Override] CNN NO FIRE ({cnn_fire_prob:.3f})")
+            if cnn_fire_prob > 0.88:
+                final = True
+                print(f"[Override] CNN hard FIRE ({cnn_fire_prob:.3f})")
+            elif cnn_fire_prob < 0.15:
+                final = False
+                print(f"[Override] CNN hard NO FIRE ({cnn_fire_prob:.3f})")
 
         winning    = [c for f,c,_,_ in votes if f==final]
         confidence = round(float(np.mean(winning))*100,1) if winning else 0.0
-        label      = "🔥 FIRE DETECTED" if final else "✅ NO FIRE DETECTED"
+
+        # FIX 2d — CNN soft "no fire" vote: reduce confidence when CNN leans no-fire
+        if cnn_fire_prob is not None and 0.15 <= cnn_fire_prob <= 0.40:
+            confidence = max(0.0, confidence - 15.0)
+            print(f"[Soft vote] CNN leans no-fire ({cnn_fire_prob:.3f}) — confidence reduced by 15pp → {confidence}%")
+
+        # FIX 2c — Confidence floor: must be ≥50% to declare FIRE
+        if final and confidence < 50.0:
+            print(f"[Confidence floor] {confidence}% < 50% — setting final=False")
+            final = False
+
+        # FIX 2e — Cap heuristic-only confidence at 60%
+        if warning_msg and confidence > 60.0:
+            confidence = 60.0
+
+        label = "🔥 FIRE DETECTED" if final else "✅ NO FIRE DETECTED"
         print(f"[Ensemble] {fire_w}/{total_w} → {label} ({confidence}%)\n")
 
         if final and confidence > 65:
@@ -417,12 +468,15 @@ def predict_image():
         img_pil.resize((300,200)).save(buf, format="JPEG", quality=85)
         img_b64 = base64.b64encode(buf.getvalue()).decode()
 
-        return jsonify({
-            "success":True,"label":label,"class":int(final),
-            "confidence":confidence,"thumbnail":f"data:image/jpeg;base64,{img_b64}",
-            "lat":lat,"lng":lng,
+        resp = {
+            "success":True, "label":label, "class":int(final),
+            "confidence":confidence, "thumbnail":f"data:image/jpeg;base64,{img_b64}",
+            "lat":lat, "lng":lng,
             "votes":[{"source":s,"fire":f,"conf":round(c*100,1),"weight":w} for f,c,s,w in votes]
-        })
+        }
+        if warning_msg:
+            resp["warning"] = warning_msg
+        return jsonify(resp)
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"success":False,"error":str(e)})
